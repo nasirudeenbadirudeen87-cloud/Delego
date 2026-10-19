@@ -299,3 +299,55 @@ describe("ApprovalCard — approve-with-note (#573)", () => {
     expect(noteEl.className).not.toContain("approval-note-display-unsynced");
   });
 });
+
+describe("ApprovalCard — callback guards and loading states (#898)", () => {
+  beforeEach(() => {
+    mockUseFeatureFlag.mockReturnValue(false);
+    mockUseDualControlCapability.mockReturnValue(false);
+    mockUseApprovalNoteCapability.mockReturnValue(false);
+    mockUseWallet.mockReturnValue({ address: "wallet-a" });
+    mockSubmitApproval.mockReset();
+    mockSetLocalApprovalNote.mockReset();
+  });
+
+  it("calls onApprove with the correct order id", () => {
+    const onApprove = vi.fn();
+    render(<ApprovalCard order={makeOrder()} onApprove={onApprove} onReject={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Approve & Pay" }));
+    expect(onApprove).toHaveBeenCalledWith("order-1");
+  });
+
+  it("calls onReject with the correct order id, reason, and reasonCode", () => {
+    const onReject = vi.fn();
+    render(<ApprovalCard order={makeOrder()} onApprove={vi.fn()} onReject={onReject} />);
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Reject" }));
+    expect(onReject).toHaveBeenCalledWith("order-1", undefined, undefined);
+  });
+
+  it("does not throw when onApprove is omitted", () => {
+    expect(() =>
+      render(<ApprovalCard order={makeOrder()} onReject={vi.fn()} />)
+    ).not.toThrow();
+  });
+
+  it("does not throw when onReject is omitted", () => {
+    expect(() =>
+      render(<ApprovalCard order={makeOrder()} onApprove={vi.fn()} />)
+    ).not.toThrow();
+  });
+
+  it("Approve & Pay button is disabled while offline", () => {
+    vi.mock("../../hooks/useOnlineStatus", () => ({
+      useOnlineStatus: () => ({
+        isOffline: true,
+        cachedOrdersCount: 0,
+        lastSyncedAt: null,
+        disabledProps: { disabled: true as const, title: "You're offline \u2014 reconnect to continue." },
+      }),
+      OFFLINE_BLOCKED_MESSAGE: "You're offline \u2014 reconnect to continue.",
+    }));
+    render(<ApprovalCard order={makeOrder()} onApprove={vi.fn()} onReject={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Approve & Pay" })).toBeDisabled();
+  });
+});

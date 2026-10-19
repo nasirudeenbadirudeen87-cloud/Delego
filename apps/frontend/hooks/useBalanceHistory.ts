@@ -196,7 +196,14 @@ export function useBalanceHistory(
       return;
     }
 
-    setState((prev: BalanceHistoryState) => ({ ...prev, status: "loading" }));
+    setState({
+      balances: [],
+      series: [],
+      status: "loading",
+      isUnfunded: false,
+      accountNotFound: false,
+      refetch: load,
+    });
 
     try {
       // 1. Fetch account record for balances

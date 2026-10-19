@@ -1,12 +1,14 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button, Card } from "@delegolabs/ui";
 import { PasskeyRegisterModal } from "../../components/wallet/PasskeyRegisterModal";
+import { FriendbotModal } from "../../components/wallet/FriendbotModal";
 import { useWallet } from "../../hooks/useWallet";
 import { useNetwork } from "../../hooks/useNetwork";
 import { useNotifications } from "../../hooks/useNotifications";
 import { useBalanceHistory } from "../../hooks/useBalanceHistory";
+import { useFriendbot } from "../../hooks/useFriendbot";
 import { WalletConnectButton } from "../../components/wallet/WalletConnectButton";
 import { FeeTierField } from "../../components/wallet/FeeTierField";
 import { BalanceSparkline } from "../../components/wallet/BalanceSparkline";
@@ -34,9 +36,8 @@ export default function WalletPage() {
   const { status, address, network, networkPassphrase, error, toast } = useWallet();
   const { network: activeNetwork } = useNetwork();
   const notifications = useNotifications();
-  const [funding, setFunding] = useState(false);
   const [passkeyOpen, setPasskeyOpen] = useState(false);
-  const [fundError, setFundError] = useState<string | null>(null);
+  const [friendbotOpen, setFriendbotOpen] = useState(false);
   const { isDemoMode } = useDemoModeGuard();
   const { isOffline } = useOnlineStatus();
 
@@ -48,48 +49,49 @@ export default function WalletPage() {
   );
 
   const nativeBalance = balanceState.balances.find(
-    (b) => b.asset_type === "native"
+    (b) => b?.asset_type === "native"
   );
-  const nativeBalanceNum = nativeBalance
-    ? parseFloat(nativeBalance.balance)
-    : 0;
+  const nativeBalanceNum =
+    nativeBalance?.balance ? parseFloat(nativeBalance.balance) : 0;
 
-  const fundAccount = useCallback(async () => {
-    if (!address || funding || isDemoMode) return;
+  // -------------------------------------------------------------------------
+  // Friendbot
+  // -------------------------------------------------------------------------
+  const { state: friendbotState, fund, initForAddress } = useFriendbot();
 
-    setFunding(true);
-    setFundError(null);
-    try {
-      const response = await fetch(
-        `https://friendbot.stellar.org?addr=${encodeURIComponent(address)}`
-      );
+  // Restore any in-progress cooldown when the connected address changes.
+  useEffect(() => {
+    if (address) initForAddress(address);
+  }, [address, initForAddress]);
 
-      if (!response.ok) {
-        throw new Error(
-          response.status === 429
-            ? "Friendbot is rate limiting this account. Please wait a minute and try again."
-            : "Friendbot could not fund this account. Please try again."
-        );
-      }
-
+  // Trigger balance refresh as soon as Friendbot confirms ledger inclusion.
+  useEffect(() => {
+    if (friendbotState.status === "success") {
+      void balanceState.refetch();
       notifications.add({
         type: "success",
         title: "Testnet account funded",
-        message: "Friendbot sent test XLM to your connected wallet.",
+        message: "Friendbot sent 10,000 XLM to your connected wallet.",
       });
-      void balanceState.refetch();
-    } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : "Friendbot could not fund this account. Please try again.";
-      setFundError(message);
-      notifications.add({ type: "error", title: "Funding failed", message });
-    } finally {
-      setFunding(false);
     }
-  }, [address, funding, isDemoMode, notifications, balanceState]);
+  }, [friendbotState.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const handleFund = useCallback(async () => {
+    if (!address || isDemoMode || isOffline) return;
+    await fund(address);
+  }, [address, fund, isDemoMode, isOffline]);
+
+  const openFriendbotModal = useCallback(() => {
+    setFriendbotOpen(true);
+  }, []);
+
+  const closeFriendbotModal = useCallback(() => {
+    setFriendbotOpen(false);
+  }, []);
+
+  // -------------------------------------------------------------------------
+  // Zero-state visibility
+  // -------------------------------------------------------------------------
   const showZeroState =
     isConnected &&
     !activeNetwork.isLive &&
@@ -254,7 +256,7 @@ export default function WalletPage() {
                   </div>
                 ) : null}
 
-                {/* Inviting zero state card linking to testnet faucet */}
+                {/* Zero-state card with Friendbot modal trigger */}
                 {showZeroState && (
                   <div
                     className="friendbot-card wallet-zero-state"
@@ -265,23 +267,26 @@ export default function WalletPage() {
                       <h2>Fund your testnet account</h2>
                       <p>
                         This connected account does not have an active XLM
-                        balance yet. Use the Friendbot testnet faucet to fund it
-                        with free testnet tokens.
+                        balance yet. Use the Friendbot testnet faucet to fund
+                        it with free testnet tokens.
                       </p>
-                      {fundError && (
+                      {friendbotState.cooldownSecondsRemaining > 0 && (
                         <p
-                          className="settings-status error"
-                          style={{ marginTop: "0.5rem" }}
+                          className="settings-status"
+                          style={{ marginTop: "0.5rem", fontSize: "0.875rem" }}
                         >
-                          {fundError}
+                          Next request in{" "}
+                          <strong>
+                            {friendbotState.cooldownSecondsRemaining}s
+                          </strong>
                         </p>
                       )}
                     </div>
                     <button
                       type="button"
                       className="friendbot-button"
-                      onClick={fundAccount}
-                      disabled={funding || isDemoMode || isOffline}
+                      onClick={openFriendbotModal}
+                      disabled={isDemoMode || isOffline}
                       title={
                         isOffline
                           ? OFFLINE_BLOCKED_MESSAGE
@@ -290,7 +295,7 @@ export default function WalletPage() {
                             : undefined
                       }
                     >
-                      {funding ? "Funding…" : "Fund your account"}
+                      Fund your account
                     </button>
                   </div>
                 )}
@@ -308,6 +313,15 @@ export default function WalletPage() {
           before it is submitted to Stellar.
         </p>
       </Card>
+
+      {/* Friendbot funding modal */}
+      <FriendbotModal
+        isOpen={friendbotOpen}
+        address={address ?? ""}
+        state={friendbotState}
+        onFund={() => void handleFund()}
+        onClose={closeFriendbotModal}
+      />
     </div>
   );
 }

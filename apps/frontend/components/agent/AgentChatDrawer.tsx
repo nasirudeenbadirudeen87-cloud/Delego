@@ -4,6 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@delegolabs/ui";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { VoiceInputButton } from "./VoiceInputButton";
+import {
+  PromptSuggestionChips,
+  type PromptSuggestionChip,
+} from "./PromptSuggestionChips";
 
 export interface AgentChatDrawerProps {
   open: boolean;
@@ -23,8 +27,10 @@ export function AgentChatDrawer({
   onSubmit,
 }: AgentChatDrawerProps) {
   const [prompt, setPrompt] = useState("");
+  const [hasSent, setHasSent] = useState(false);
+  const [focusSend, setFocusSend] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(panelRef, open);
+  useFocusTrap({ containerRef: panelRef, isActive: open });
 
   useEffect(() => {
     if (!open) return;
@@ -35,13 +41,27 @@ export function AgentChatDrawer({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, onClose]);
 
+  useEffect(() => {
+    if (!focusSend) return;
+    panelRef.current
+      ?.querySelector<HTMLButtonElement>("[data-agent-send]")
+      ?.focus();
+    setFocusSend(false);
+  }, [focusSend]);
+
   if (!open) return null;
+
+  function handleChipSelect(chip: PromptSuggestionChip) {
+    setPrompt(chip.promptText);
+    setFocusSend(true);
+  }
 
   function handleSubmit() {
     const trimmed = prompt.trim();
     if (!trimmed) return;
     onSubmit?.(trimmed);
     setPrompt("");
+    setHasSent(true);
   }
 
   return (
@@ -59,6 +79,8 @@ export function AgentChatDrawer({
         <p className="agent-chat-hint">
           Describe what you want to buy and the agent will handle it.
         </p>
+
+        <PromptSuggestionChips onSelect={handleChipSelect} hidden={hasSent} />
 
         <label htmlFor="agent-prompt-input">Message</label>
         <textarea
@@ -81,6 +103,7 @@ export function AgentChatDrawer({
           <Button
             variant="primary"
             type="button"
+            data-agent-send
             onClick={handleSubmit}
             disabled={prompt.trim().length === 0}
           >

@@ -73,7 +73,12 @@ export default async function StorePage({
           <dd>{store.reputationScore}</dd>
         </div>
       </dl>
-      <StorefrontCatalog products={store.products} />
+      <StorefrontCatalog
+        products={store.products}
+        merchantId={store.merchantId}
+        merchantName={store.storeName}
+        payoutAddress={store.stellarAddress}
+      />
     </div>
   );
 }

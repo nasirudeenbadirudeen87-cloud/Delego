@@ -3,34 +3,62 @@ import { createRetryingFetch } from "./api";
 import type { NetworkConfig } from "./networks";
 import { validatePayoutAddressOnNetwork } from "./payoutAddress";
 import type { CatalogImportRow } from "./catalogCsv";
+import type { DomainVerificationResult } from "./merchantDomainVerification";
 
 export interface MerchantRegistrationForm {
   storeName: string;
+  storeSlug: string;
   description: string;
   contactEmail: string;
-  stellarPayoutAddress: string;
-  category: "electronics" | "clothing" | "services" | "digital" | "other";
-  websiteUrl?: string;
-  /** Parsed catalog rows from the optional CSV import step (#791). */
-  catalogRows?: CatalogImportRow[];
+  payoutAddress: string;
+  domainName: string;
+  isDomainVerified: boolean;
+  acceptedCurrencies: string[];
 }
 
-export type OnboardingStep = "store_info" | "catalog_import" | "wallet_verify" | "contract_register" | "complete";
+export interface MerchantOnboardingData {
+  storeName: string;
+  storeSlug: string;
+  description: string;
+  contactEmail: string;
+  payoutAddress: string;
+  domainName: string;
+  isDomainVerified: boolean;
+  acceptedCurrencies: string[];
+}
 
-export const MERCHANT_CATEGORIES: MerchantRegistrationForm["category"][] = [
-  "electronics",
-  "clothing",
-  "services",
-  "digital",
-  "other",
-];
+export type OnboardingStep = "store_details" | "payout_address" | "contract_binding" | "verification" | "complete";
+
+export const MERCHANT_CATEGORIES: MerchantRegistrationForm["acceptedCurrencies"] = [
+  "XLM",
+  "USD",
+  "EUR",
+  "GBP",
+  "JPY",
+] as const;
 
 const retryingFetch = createRetryingFetch();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export function isValidContactEmail(email: string): boolean {
   return EMAIL_RE.test(email.trim());
+}
+
+export function isValidStoreSlug(slug: string): boolean {
+  if (!slug || slug.length === 0) return false;
+  if (slug.length > 64) return false;
+  return SLUG_RE.test(slug.toLowerCase());
+}
+
+export function generateStoreSlug(storeName: string): string {
+  return storeName
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 /**
@@ -44,6 +72,26 @@ export async function validateStorePayoutAddress(
   network: Pick<NetworkConfig, "sorobanRpcUrl" | "label">
 ) {
   return validatePayoutAddressOnNetwork(address, network);
+}
+
+/**
+ * Validates domain format without network access.
+ */
+export function validateDomainFormat(domain: string): {
+  valid: boolean;
+  error?: string;
+} {
+  if (!domain || domain.trim().length === 0) {
+    return { valid: false, error: "Domain name is required." };
+  }
+  const trimmed = domain.trim();
+  if (trimmed.length > 253) {
+    return { valid: false, error: "Domain name is too long (max 253 characters)." };
+  }
+  if (!/^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$/.test(trimmed)) {
+    return { valid: false, error: "Enter a valid domain name (e.g., example.com)." };
+  }
+  return { valid: true };
 }
 
 /**
@@ -97,4 +145,43 @@ export async function importMerchantCatalog(
   }
   const json = (await res.json()) as { imported?: number };
   return { imported: json.imported ?? rows.length };
+}
+
+/**
+ * Loads persisted onboarding state from localStorage.
+ */
+export function loadOnboardingState(): MerchantOnboardingData | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem("delego_merchant_onboarding");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed as MerchantOnboardingData;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Saves onboarding state to localStorage for persistence across navigation.
+ */
+export function saveOnboardingState(data: MerchantOnboardingData): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem("delego_merchant_onboarding", JSON.stringify(data));
+  } catch {
+    // Storage unavailable - continue anyway
+  }
+}
+
+/**
+ * Clears onboarding state (used when registration is complete or user cancels).
+ */
+export function clearOnboardingState(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem("delego_merchant_onboarding");
+  } catch {
+    // Ignore cleanup failures
+  }
 }

@@ -1,0 +1,88 @@
+name: Lighthouse CI
+
+# Performance and accessibility budget gate (#814).
+#
+# Asserts that every production build stays above the quality bar:
+#   - Performance     >= 0.90
+#   - Accessibility   >= 0.95
+#   - Best Practices  >= 0.90
+#
+# Runs against the Next.js production build served on a local port. Fails the
+# PR when any category drops below its threshold.
+#
+# The audited URLs live in lighthouserc.json, which @lhci/cli parses with a
+# strict JSON.parse — so it cannot carry comments, and the note on why
+# /orders is not among them lives here instead. Every audited URL must render
+# for an anonymous visitor: /orders is in middleware.ts's PROTECTED_ROUTES, so
+# an unauthenticated request to it redirects to /login, which has no page yet,
+# and Chrome gets a 404 that aborts the whole run.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: lighthouse-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 20
+  NEXT_PUBLIC_API_URL: "https://api.example.com"
+  PORT: "3100"
+  # `next start` reads WEB_PORT (see the app's start script); passing a second
+  # `-p` on the command line left the server on the default port and wait-on
+  # timed out against 3100.
+  WEB_PORT: "3100"
+
+jobs:
+  lighthouse:
+    name: Lighthouse budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: "https://npm.pkg.github.com"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # apps/frontend imports @delegolabs/ui and @delegolabs/types, which
+      # resolve to the packages' dist/ output. Those must be built first or
+      # `next build` fails to resolve them.
+      - name: Build shared packages
+        run: pnpm --filter "./packages/*" build
+
+      - name: Build frontend
+        run: pnpm --filter @delegolabs/web build
+        env:
+          NODE_ENV: production
+          NEXT_PUBLIC_API_URL: ${{ env.NEXT_PUBLIC_API_URL }}
+
+      - name: Start production server
+        run: |
+          pnpm --filter @delegolabs/web start &
+          npx wait-on http://localhost:${{ env.PORT }} --timeout 120000
+
+      - name: Run Lighthouse CI
+        run: npx @lhci/cli autorun
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}

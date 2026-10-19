@@ -35,6 +35,32 @@ describe("AgentChatDrawer", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("fills the input from a suggestion chip and focuses Send", async () => {
+    const user = userEvent.setup();
+    render(<AgentChatDrawer open onClose={vi.fn()} onSubmit={vi.fn()} />);
+
+    await user.click(
+      screen.getByRole("button", { name: /Keyboards under 50 USDC/ })
+    );
+
+    expect(screen.getByLabelText("Message")).toHaveValue(
+      "Find mechanical keyboards under 50 USDC"
+    );
+    expect(screen.getByRole("button", { name: "Send" })).toHaveFocus();
+  });
+
+  it("hides the suggestion chips after the first message", async () => {
+    const user = userEvent.setup();
+    render(<AgentChatDrawer open onClose={vi.fn()} onSubmit={vi.fn()} />);
+
+    const chips = screen.getByRole("list", { name: "Suggested prompts" });
+    await user.type(screen.getByLabelText("Message"), "hello");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(chips).toHaveAttribute("aria-hidden", "true");
+    expect(chips).toHaveClass("prompt-chips--hidden");
+  });
+
   it("closes on Escape and on backdrop click", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();

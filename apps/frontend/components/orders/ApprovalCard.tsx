@@ -1,5 +1,7 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { useState } from "react";
 import { useLocale } from "next-intl";
 import { Amount, Button, Card } from "@delegolabs/ui";
@@ -19,7 +21,10 @@ import {
   OFFLINE_BLOCKED_MESSAGE,
 } from "../../hooks/useOnlineStatus";
 import { ApprovalAgeBadge } from "./ApprovalAgeBadge";
-import { DelegationTagBadge } from "../delegations/public";
+// Direct import rather than the delegations barrel — the barrel pulls the whole
+// delegations feature (and the Stellar SDK behind MerchantFilterManager) into
+// every route that renders an approval, for this one badge.
+import { DelegationTagBadge } from "../delegations/DelegationTagBadge";
 import { useDelegationTags } from "../../hooks/useDelegationTags";
 import { useFeatureFlag } from "../../lib/featureFlags";
 import { useDualControlCapability } from "../../hooks/useDualControlCapability";
@@ -30,7 +35,12 @@ import { submitApproval } from "../../services/approvals";
 import { ApprovalNoteField, APPROVAL_NOTE_MAX_LENGTH } from "./ApprovalNoteField";
 import { ApprovalNoteDisplay } from "./ApprovalNoteDisplay";
 import { setLocalApprovalNote } from "../../lib/localApprovalNotes";
-import { TaxBreakdownDisplay } from "./TaxBreakdownDisplay";
+// The tax breakdown is only rendered for orders that carry a delivery postal
+// code, so it is code-split: the tax tables and jurisdiction lookup only reach
+// the browser for the rows that actually show one.
+const TaxBreakdownDisplay = dynamic(() =>
+  import("./TaxBreakdownDisplay").then((m) => m.TaxBreakdownDisplay)
+);
 
 export interface ApprovalCardProps {
   order: Order;
@@ -40,8 +50,10 @@ export interface ApprovalCardProps {
   pendingOffline?: boolean;
   /** Delivery postal code for tax calculation. If provided, shows tax breakdown before approval. */
   deliveryPostalCode?: string;
-  onApprove: (id: string) => void | Promise<unknown>;
-  onReject: (
+  /** Called when the order is approved. */
+  onApprove?: (id: string) => void | Promise<unknown>;
+  /** Called when the order is rejected. */
+  onReject?: (
     id: string,
     reason?: string,
     /** Structured reason code (#567); optional so callers that only ever pass free text (e.g. the "Enter"-hotkey instant reject) keep working unchanged. */
@@ -70,6 +82,7 @@ export function ApprovalCard({
   const [showReasonPicker, setShowReasonPicker] = useState(false);
   const [addingNote, setAddingNote] = useState(false);
   const [note, setNote] = useState("");
+  const [approving, setApproving] = useState(false);
 
   const { isMismatched } = useNetworkMismatch();
   const locale = useLocale();
@@ -96,7 +109,7 @@ export function ApprovalCard({
     dualControlFlagEnabled && dualControlCapable && order.dualControl?.required === true;
   const [dcSubmitting, setDcSubmitting] = useState(false);
 
-  const disabled = pending || dcSubmitting || isMismatched || isDemoMode || isOffline;
+  const disabled = pending || dcSubmitting || isMismatched || isDemoMode || isOffline || approving || rejecting;
 
   const actionTitle = isOffline
     ? OFFLINE_BLOCKED_MESSAGE
@@ -107,18 +120,16 @@ export function ApprovalCard({
         : undefined;
 
   const handleApprove = guard(async () => {
+    setApproving(true);
     const trimmedNote = note.trim();
     try {
       if (trimmedNote && approvalNoteSupported) {
-        // Route note-bearing approvals through the note-aware endpoint so the
-        // note is actually persisted server-side.
         const res = await submitApproval(order.id, walletAddress ?? "", trimmedNote);
         if (res.error) throw new Error(res.error.message);
         if (res.data) onDualControlUpdate?.(res.data);
       } else {
-        await onApprove(order.id);
+        await onApprove?.(order.id);
         if (trimmedNote) {
-          // Backend doesn't advertise support — keep the note local-only.
           setLocalApprovalNote(order.id, trimmedNote);
         }
       }
@@ -127,10 +138,13 @@ export function ApprovalCard({
       setNote("");
     } catch {
       announce(`Failed to approve order ${order.id}.`, "assertive");
+    } finally {
+      setApproving(false);
     }
   });
 
   const handleDualControlApprove = guard(async () => {
+    setApproving(true);
     setDcSubmitting(true);
     const trimmedNote = note.trim();
     const sendNote = trimmedNote && approvalNoteSupported ? trimmedNote : undefined;
@@ -155,15 +169,19 @@ export function ApprovalCard({
       announce(`Failed to approve order ${order.id}.`, "assertive");
     } finally {
       setDcSubmitting(false);
+      setApproving(false);
     }
   });
 
   const handleConfirmReject = guard(async () => {
+    setRejecting(true);
     try {
-      await onReject(order.id, reason.trim() || undefined, reasonCode || undefined);
+      await onReject?.(order.id, reason.trim() || undefined, reasonCode || undefined);
       announce(`Order ${order.id} rejected.`, "polite");
     } catch {
       announce(`Failed to reject order ${order.id}.`, "assertive");
+    } finally {
+      setRejecting(false);
     }
   });
 
@@ -259,29 +277,34 @@ export function ApprovalCard({
               </thead>
               <tbody>
                 {(order.items || (order as any).lineItems || []).map(
-                  (item: any, idx: number) => (
-                    <tr key={item.productId || item.name || idx}>
-                      <td>{item.productId || item.name}</td>
-                      <td>{item.quantity}</td>
-                      <td>
-                        <Amount
-                          stroops={item.unitPriceStroops || item.price}
-                          currency={currencyId as any}
-                          xlmUsdRate={rate?.xlmUsdRate}
-                        />
-                      </td>
-                      <td>
-                        <Amount
-                          stroops={
-                            (item.unitPriceStroops || item.price) *
-                            BigInt(item.quantity)
-                          }
-                          currency={currencyId as any}
-                          xlmUsdRate={rate?.xlmUsdRate}
-                        />
-                      </td>
-                    </tr>
-                  )
+                  (item: any, idx: number) => {
+                    // Line items arrive with the unit price as a bigint, a
+                    // decimal string, or a number depending on the source, so
+                    // it has to be normalised before any arithmetic.
+                    const unitPrice = BigInt(
+                      item.unitPriceStroops || item.price || 0
+                    );
+                    return (
+                      <tr key={item.productId || item.name || idx}>
+                        <td>{item.productId || item.name}</td>
+                        <td>{item.quantity}</td>
+                        <td>
+                          <Amount
+                            stroops={unitPrice}
+                            currency={currencyId as any}
+                            xlmUsdRate={rate?.xlmUsdRate}
+                          />
+                        </td>
+                        <td>
+                          <Amount
+                            stroops={unitPrice * BigInt(item.quantity)}
+                            currency={currencyId as any}
+                            xlmUsdRate={rate?.xlmUsdRate}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  }
                 )}
               </tbody>
             </table>
@@ -367,7 +390,7 @@ export function ApprovalCard({
                   variant="secondary"
                   size="sm"
                   onClick={() => setRejecting(false)}
-                  disabled={pending}
+                  disabled={pending || rejecting}
                 >
                   Cancel
                 </Button>
@@ -376,10 +399,10 @@ export function ApprovalCard({
                   size="sm"
                   onClick={handleConfirmReject}
                   disabled={disabled}
-                  loading={pending}
+                  loading={pending || rejecting}
                   title={actionTitle}
                 >
-                  Confirm Reject
+                  {rejecting ? "Rejecting…" : "Confirm Reject"}
                 </Button>
               </div>
             </div>
@@ -425,10 +448,10 @@ export function ApprovalCard({
                 size="sm"
                 onClick={dualControlActive ? handleDualControlApprove : handleApprove}
                 disabled={disabled || dcBlocked || note.length > APPROVAL_NOTE_MAX_LENGTH}
-                loading={pending || dcSubmitting}
+                loading={pending || dcSubmitting || approving}
                 title={dcBlocked ? dcReason : actionTitle}
               >
-                Approve & Pay
+                {approving ? "Approving…" : "Approve & Pay"}
               </Button>
             </div>
           )}

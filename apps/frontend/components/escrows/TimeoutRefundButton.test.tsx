@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TimeoutRefundButton } from "./TimeoutRefundButton";
 import { WALLET_CANCELLED_MESSAGE } from "../../services/wallet";
+import { resetTransactionLock } from "../../hooks/useTransactionLock";
 
 const { invokeEscrowRefundMock } = vi.hoisted(() => ({
   invokeEscrowRefundMock: vi.fn(),
@@ -88,5 +89,46 @@ describe("TimeoutRefundButton wallet rejection handling (#743)", () => {
       await screen.findByText("The refund transaction failed on-chain.")
     ).toBeInTheDocument();
     expect(screen.getByRole("alert")).toBeInTheDocument();
+  });
+});
+
+describe("TimeoutRefundButton double-submit lock (#937)", () => {
+  beforeEach(() => {
+    invokeEscrowRefundMock.mockReset();
+    resetTransactionLock();
+  });
+
+  it("submits once for rapid multi-clicks and disables while signing", async () => {
+    const user = userEvent.setup();
+    let settle!: (value: { txHash: string }) => void;
+    invokeEscrowRefundMock.mockReturnValue(
+      new Promise((resolve) => {
+        settle = resolve;
+      })
+    );
+
+    renderButton();
+    const button = screen.getByRole("button", { name: /claim full refund/i });
+    await user.tripleClick(button);
+
+    expect(invokeEscrowRefundMock).toHaveBeenCalledTimes(1);
+    expect(button).toBeDisabled();
+
+    settle({ txHash: "abcdef1234567890" });
+    expect(await screen.findByText(/refund claimed/i)).toBeInTheDocument();
+  });
+
+  it("re-enables the button after the user declines the signature", async () => {
+    const user = userEvent.setup();
+    invokeEscrowRefundMock.mockRejectedValue(
+      new Error("User declined to sign the transaction")
+    );
+
+    renderButton();
+    const button = screen.getByRole("button", { name: /claim full refund/i });
+    await user.click(button);
+
+    expect(await screen.findByText(WALLET_CANCELLED_MESSAGE)).toBeInTheDocument();
+    expect(button).toBeEnabled();
   });
 });

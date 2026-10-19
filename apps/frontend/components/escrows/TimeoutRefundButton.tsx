@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Amount, Button } from "@delegolabs/ui";
 import { useCurrency } from "../../hooks/useCurrency";
 import { useNetwork } from "../../hooks/useNetwork";
+import { useTransactionLock } from "../../hooks/useTransactionLock";
 import { useWallet } from "../../hooks/useWallet";
 import {
   LEDGER_CLOSE_SECONDS,
@@ -49,7 +50,7 @@ export function TimeoutRefundButton({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
-  const inFlightRef = useRef(false);
+  const { isLocked, runLocked } = useTransactionLock();
 
   const state =
     currentLedger === null
@@ -78,20 +79,24 @@ export function TimeoutRefundButton({
   }, [network.sorobanRpcUrl, state?.canRefund, txHash]);
 
   const handleRefund = useCallback(async () => {
-    if (inFlightRef.current || !state?.canRefund || !address) return;
-    inFlightRef.current = true;
-    setSubmitting(true);
-    setError(null);
-    setNotice(null);
+    if (!state?.canRefund || !address) return;
     try {
-      const result = await invokeEscrowRefund({
-        rpcUrl: network.sorobanRpcUrl,
-        networkPassphrase: network.networkPassphrase,
-        contractId,
-        buyerAddress: address,
-        signTransaction: (xdr) =>
-          signWithFreighter(xdr, network.networkPassphrase, address),
+      // The global lock rejects repeat clicks (here or on any other tx button)
+      // until this signature + submission settles.
+      const result = await runLocked(`refund:${contractId}`, () => {
+        setSubmitting(true);
+        setError(null);
+        setNotice(null);
+        return invokeEscrowRefund({
+          rpcUrl: network.sorobanRpcUrl,
+          networkPassphrase: network.networkPassphrase,
+          contractId,
+          buyerAddress: address,
+          signTransaction: (xdr) =>
+            signWithFreighter(xdr, network.networkPassphrase, address),
+        });
       });
+      if (!result) return;
       setTxHash(result.txHash);
       onRefunded?.(result.txHash);
     } catch (err) {
@@ -105,9 +110,8 @@ export function TimeoutRefundButton({
       }
     } finally {
       setSubmitting(false);
-      inFlightRef.current = false;
     }
-  }, [address, contractId, network, onRefunded, state?.canRefund]);
+  }, [address, contractId, network, onRefunded, runLocked, state?.canRefund]);
 
   if (txHash) {
     return (
@@ -117,7 +121,7 @@ export function TimeoutRefundButton({
     );
   }
 
-  const disabled = !state?.canRefund || !address || submitting;
+  const disabled = !state?.canRefund || !address || submitting || isLocked;
   const countdown =
     state && !state.canRefund
       ? `Available in ${state.remainingLedgers.toLocaleString()} ledgers (${formatLedgerCountdown(state.remainingLedgers)})`
